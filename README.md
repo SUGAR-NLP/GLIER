@@ -1,0 +1,139 @@
+# GLIER: Generative Legal Inference and Evidence Ranking for Legal Case Retrieval
+
+[![ACL 2026](https://img.shields.io/badge/ACL-2026-blue)](https://aclanthology.org/2026.acl-long.1364/)
+[![arXiv](https://img.shields.io/badge/arXiv-2604.23779-b31b1b.svg)](https://arxiv.org/abs/2604.23779)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/License-Research-green.svg)](#license)
+
+This repository contains the official implementation of **GLIER: Generative Legal Inference and Evidence Ranking for Legal Case Retrieval**, published as a long paper at **ACL 2026**.
+
+Legal Case Retrieval (LCR) bridges the semantic gap between colloquial queries and professional legal documents. GLIER mimics the cognition of legal experts: it first **generatively infers** the latent legal structure (charge + constitutive legal elements) of a query, then **fuses** this generative knowledge with lexical signals through a lightweight Multi-View Scorer to re-rank candidate cases.
+
+---
+
+## Overview
+
+The framework has two stages:
+
+1. **Generative Legal Inference** — Fine-tune an mT5 on LLM-distilled "silver standard" data to jointly generate `charge [SEP] elements` with decoupled confidence scores.
+2. **Multi-View Evidence Fusion** — Build a 5-dimensional feature vector per (query, document) pair (charge confidence, element confidence, charge hit, element support ratio, normalized BM25) and map it to a relevance score via an MLP scorer for re-ranking.
+
+---
+
+## Repository Structure
+
+```
+GLIER/
+├── config.py                 # centralized paths & hyperparameters (edit before running)
+├── genlcr_core.py            # core: inference engine, MLP scorer, BM25 processor, term cleaner
+├── Generate_legal.py         # optional LLM-based legal-element extraction from raw cases
+├── requirements.txt          # Python dependencies
+├── train_genlcr.py           # train the joint generative mT5 (charge + elements)
+├── run_inference.py          # offline inference -> inference cache (cleaned charges/elements + confidences)
+├── train_scorer_LeCaRD.py    # train the 5-dim MLP re-ranker (with hard-negative mining)
+├── eval_lecard.py            # re-ranking evaluation on the candidate pool
+├── Metrics.py                # IR evaluation metrics
+└── run_feature_generation.sh # convenience script: batch inference for train & test splits
+```
+
+Models and intermediate artifacts (caches, checkpoints, eval outputs) are written to `checkpoints/` by default; generated legal elements go to `data/`.
+
+---
+
+## Installation
+
+```bash
+# Python >= 3.8
+pip install -r requirements.txt
+```
+
+Configure the dataset and model paths before running:
+- Set the environment variable `GLIER_DATA_ROOT` to the directory that contains your LeCaRD / LeCaRDv2 datasets (or edit `DATA_ROOT` in `config.py`).
+- Set the environment variable `GLIER_MODEL_PATH` to your mT5 checkpoint (or edit `DEFAULT_MODEL_PATH` in `config.py`).
+
+---
+
+## Data Preparation
+
+GLIER is evaluated on two public Chinese legal case retrieval benchmarks:
+- **LeCaRD** (Ma et al., 2021) — a query set over Chinese criminal cases, each with a candidate pool of ~100 documents and graded relevance judgments.
+- **LeCaRDv2** (Li et al., 2023) — a much larger extension with tens of thousands of candidate documents per query.
+
+For each benchmark, place the following under `GLIER_DATA_ROOT` (or set the paths directly in `config.py` — see the comments there for what each entry means):
+- candidate case documents
+- per-document `charge` + `legal_elements` annotations
+- query files (`train_query.json` / `test_query.json`)
+- a pre-built BM25 index (`bm25_index.pkl`)
+- relevance labels (LeCaRD: `label_top30_dict.json`)
+
+If you already have the `legal_elements` files, you can skip the `Generate_legal.py` extraction step.
+
+---
+
+## Usage
+
+### 1. (Optional) Generate legal elements with an LLM
+```bash
+python Generate_legal.py --dataset lecard
+python Generate_legal.py --dataset lecardv2
+```
+
+### 2. Train the joint generative model
+```bash
+python train_genlcr.py --dataset lecard  --gpus 0
+python train_genlcr.py --dataset lecardv2 --gpus 1
+```
+
+### 3. Run offline inference (build the inference cache)
+```bash
+python run_inference.py \
+    --dataset LeCaRD --split test \
+    --query_path /path/to/test_query.json \
+    --output_file ./checkpoints/LeCaRD/MLP/inference_cache_test.json \
+    --gpu_id 0 --batch_size 32
+```
+Repeat for `--split train` (or use `run_feature_generation.sh`).
+
+### 4. Train the MLP re-ranker
+```bash
+python train_scorer_LeCaRD.py --gpu_id 0
+```
+
+### 5. Evaluate
+```bash
+python eval_lecard.py --gpu_id 0
+```
+
+---
+
+## Citation
+
+```bibtex
+@inproceedings{li-etal-2026-glier,
+    title = "{GLIER}: Generative Legal Inference and Evidence Ranking for Legal Case Retrieval",
+    author = "Li, Minghan  and
+      Lv, Tianrui  and
+      Zhang, Chao  and
+      Zhou, Guodong",
+    editor = "Liakata, Maria  and
+      Moreira, Viviane P.  and
+      Zhang, Jiajun  and
+      Jurgens, David",
+    booktitle = "Proceedings of the 64th Annual Meeting of the {A}ssociation for {C}omputational {L}inguistics (Volume 1: Long Papers)",
+    month = jul,
+    year = "2026",
+    address = "San Diego, California, United States",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2026.acl-long.1364/",
+    doi = "10.18653/v1/2026.acl-long.1364",
+    pages = "29561--29572",
+    ISBN = "979-8-89176-390-6",
+    abstract = "The semantic gap between colloquial user queries and professional legal documents presents a fundamental challenge in Legal Case Retrieval (LCR). Existing dense retrieval methods typically treat LCR as a black-box semantic matching process, neglecting the explicit juridical logic that underpins legal relevance. To address this, we propose GLIER (Generative Legal Inference and Evidence Ranking), a framework that reformulates retrieval as an inference process over latent legal variables. GLIER decomposes the task into two interpretability-driven stages: (1) A Joint Generative Inference module that translates raw queries into latent legal indicators (Charges and Legal Elements), employing a unified sequence-to-sequence strategy where charges and elements are generated jointly to enforce logical consistency; and (2) A Multi-View Evidence Fusion mechanism that aggregates generative confidence with structural and lexical signals for precise ranking. Extensive experiments on LeCaRD and LeCaRDv2 demonstrate that GLIER outperforms strong baselines like SAILER and KELLER. Notably, our framework exhibits exceptional data efficiency, maintaining robust performance even when trained with only 10{\%} of the data."
+}
+```
+
+---
+
+## License
+
+This repository is released for research purposes. Please check the licenses of the underlying datasets before use.
