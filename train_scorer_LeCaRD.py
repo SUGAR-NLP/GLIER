@@ -266,11 +266,13 @@ def main():
     # paths (default from config, overridable via command line)
     parser.add_argument("--bm25_index_path", type=str, default=str(config.LECARD_BM25_INDEX))
     parser.add_argument("--train_query_path", type=str, default=str(config.LECARD_QUERY_TRAIN))
-    parser.add_argument("--test_query_path", type=str, default=str(config.LECARD_QUERY_TEST))
+    # NOTE: test_query_path is intentionally NOT consumed here. The test split is
+    #       reserved exclusively for eval_lecard.py to avoid test-set leakage
+    #       (using it for model selection would inflate the reported test metrics).
     parser.add_argument("--label_path", type=str, default=str(config.LECARD_LABEL_PATH))
     parser.add_argument("--legal_elements_path", type=str, default=str(config.LECARD_LEGAL_ELEMENTS_PATH))
     parser.add_argument("--inference_cache_path", type=str, default=str(config.LECARD_INFERENCE_CACHE_TRAIN))
-    parser.add_argument("--inference_cache_path_test", type=str, default=str(config.LECARD_INFERENCE_CACHE_TEST))
+    # NOTE: the test inference cache is likewise reserved for eval_lecard.py only.
     parser.add_argument("--scorer_save_path", type=str, default=str(config.LECARD_SCORER_DIR / "scorer_best.pth"))
     parser.add_argument("--cache_dir", type=str, default=str(config.LECARD_SCORER_DIR / "cache_features"))
 
@@ -282,6 +284,9 @@ def main():
     parser.add_argument("--hard_ratio", type=float, default=config.SCORER_HARD_RATIO,
                         help="Fraction of high-BM25 negatives (0.0=pure random, 1.0=all hard)")
     parser.add_argument("--pos_threshold", type=int, default=config.LECARD_RELEVANCE_THRESHOLD)
+    parser.add_argument("--val_ratio", type=float, default=0.2,
+                        help="Fraction of TRAIN queries held out as validation for model selection "
+                             "(the test split is never used for validation).")
 
     args = parser.parse_args()
 
@@ -297,21 +302,32 @@ def main():
 
     # 1. load components
     bm25_proc = core.BM25Processor(args.bm25_index_path)
-    train_qs = core.load_queries(args.train_query_path)
-    test_qs = core.load_queries(args.test_query_path)  # used as validation set
+    train_qs_all = core.load_queries(args.train_query_path)
 
-    logging.info(f"Loaded {len(train_qs)} train queries, {len(test_qs)} test queries.")
+    logging.info(f"Loaded {len(train_qs_all)} train queries.")
 
     charge_idx, elem_idx, pid2struct = core.build_inverted_indexes(args.legal_elements_path)
     cleaner = core.TermCleaner(set(charge_idx.keys()), set(elem_idx.keys()))
 
     labels_full, ranking_pool = load_lecard_labels_and_pool(args.label_path)
 
-    # inference cache: merge train and test (skip if test is missing)
+    # inference cache: TRAIN split only.
+    # The TEST split is reserved exclusively for eval_lecard.py and must never be seen
+    # during training (otherwise the reported test metrics are optimistically biased).
     inference_cache = load_inference_cache(args.inference_cache_path)
-    test_cache = load_inference_cache(args.inference_cache_path_test)
-    inference_cache.update(test_cache)
-    logging.info(f"Merged inference cache size: {len(inference_cache)}")
+    logging.info(f"Loaded inference cache size: {len(inference_cache)}")
+
+    # ---- Hold out a validation split FROM the training queries (deterministic, seeded) ----
+    # Replaces the previous leaky setup where test_query.json doubled as the validation set.
+    random.seed(42)
+    all_qids = sorted(train_qs_all.keys())
+    random.shuffle(all_qids)
+    n_val = max(1, int(round(len(all_qids) * args.val_ratio)))
+    val_qids = set(all_qids[:n_val])
+    train_qs = {q: train_qs_all[q] for q in all_qids[n_val:]}
+    val_qs = {q: train_qs_all[q] for q in val_qids}
+    logging.info(f"Train/Val split (from train queries): Train {len(train_qs)} | Val {len(val_qs)} "
+                 f"(val_ratio={args.val_ratio})")
 
     if not ranking_pool or not inference_cache:
         logging.error("Missing pool or inference cache.")
@@ -329,10 +345,10 @@ def main():
         return valid
 
     train_qs_valid = filter_valid(train_qs)
-    test_qs_valid = filter_valid(test_qs)
+    val_qs_valid = filter_valid(val_qs)
 
     logging.info(f"Valid Queries (with pos>={args.pos_threshold} in pool): "
-                 f"Train {len(train_qs_valid)}, Val {len(test_qs_valid)}")
+                 f"Train {len(train_qs_valid)}, Val {len(val_qs_valid)}")
 
     # 3. feature extraction
     os.makedirs(args.cache_dir, exist_ok=True)
@@ -358,7 +374,7 @@ def main():
     )
 
     val_feats, val_labels = extract_training_data(
-        queries=test_qs_valid,
+        queries=val_qs_valid,
         ranking_pool=ranking_pool,
         labels_full=labels_full,
         inference_cache=inference_cache,
@@ -367,7 +383,7 @@ def main():
         cleaner=cleaner,
         threshold=args.pos_threshold,
         desc="ValFeat",
-        cache_file=os.path.join(args.cache_dir, "test_feats.pkl"),
+        cache_file=os.path.join(args.cache_dir, "val_feats.pkl"),
     )
 
     logging.info(f"Feature dims sanity check -> first sample: {train_feats[0] if train_feats else 'EMPTY'}")
