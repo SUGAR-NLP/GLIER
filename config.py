@@ -58,7 +58,7 @@ TRAIN_BATCH_SIZE = 2
 LEARNING_RATE = 3e-5
 MAX_SOURCE_LENGTH_LECARD = 512   # max length, adjust as needed
 MAX_SOURCE_LENGTH_LECARDV2 = 512  # max length, adjust as needed
-MAX_TARGET_LENGTH = 256
+MAX_TARGET_LENGTH = 128
 TRAIN_EPOCHS = 20
 
 # ==========================================
