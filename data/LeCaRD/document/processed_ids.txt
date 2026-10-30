@@ -1,5 +1,0 @@
-/mnt/sdc/ltr/datasets_all/LeCaRD/data/candidates/candidates/259/10819.json
-/mnt/sdc/ltr/datasets_all/LeCaRD/data/candidates/candidates/259/11657.json
-/mnt/sdc/ltr/datasets_all/LeCaRD/data/candidates/candidates/259/11290.json
-/mnt/sdc/ltr/datasets_all/LeCaRD/data/candidates/candidates/259/11423.json
-/mnt/sdc/ltr/datasets_all/LeCaRD/data/candidates/candidates/259/10475.json
